@@ -2,7 +2,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import os
 
-# Local development-ku SQLite; Live deploy pannumbodhu DATABASE_URL env variable-la PostgreSQL URL kuduppom
+# Local development SQLite; while Live deploying DATABASE_URL env variable ->PostgreSQL URL
+
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./snack_factory.db")
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
