@@ -7,6 +7,7 @@ import { Factory, ShoppingCart, FileText, BarChart3, AlertTriangle, CheckCircle,
 const API = import.meta.env.VITE_API_URL || "http://127.0.0";
 
 
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [tab, setTab] = useState("dashboard");
