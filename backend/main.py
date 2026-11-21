@@ -272,3 +272,57 @@ def get_stock_ledger(db: Session = Depends(get_db)):
         }
         for e in entries
     ]
+@app.post("/api/reset-benchmark")
+def reset_benchmark(db: Session = Depends(get_db)):
+    from seed import seed_data
+    db.close()
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    seed_data()
+    return {"message": "Database reset to Section 5 initial state!"}
+
+@app.get("/api/audit-summary")
+def get_audit_summary(db: Session = Depends(get_db)):
+    orders = db.query(Order).filter(Order.status == "dispatched").all()
+    total_taxable = sum((Decimal(o.taxable_amount) for o in orders), Decimal("0"))
+    total_revenue = total_taxable
+    total_cgst = sum((Decimal(o.cgst) for o in orders), Decimal("0"))
+    total_sgst = sum((Decimal(o.sgst) for o in orders), Decimal("0"))
+    total_igst = sum((Decimal(o.igst) for o in orders), Decimal("0"))
+
+    flagged_runs = db.query(func.count(ProductionRun.id)).filter(ProductionRun.is_flagged.is_(True)).scalar() or 0
+    shortage_orders = 0
+    for order in db.query(Order).filter(Order.status == "submitted").all():
+        items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
+        if any(Decimal(item.qty) > get_stock_balance(db, item.item_id) for item in items):
+            shortage_orders += 1
+
+    customers = db.query(Customer).all()
+    cust_summary = []
+    for c in customers:
+        billed = sum((Decimal(o.total_amount) for o in orders if o.customer_id == c.id), Decimal("0"))
+        paid = db.query(func.sum(Payment.amount)).filter(Payment.customer_id == c.id).scalar() or Decimal("0")
+        cust_summary.append({
+            "name": c.name,
+            "state": c.state,
+            "total_billed": float(billed),
+            "total_paid": float(paid),
+            "outstanding": float(billed - Decimal(paid))
+        })
+
+    return {
+        "total_revenue": float(total_revenue),
+        "active_alerts": flagged_runs + shortage_orders,
+        "alerts": {
+            "flagged_runs": flagged_runs,
+            "shortage_orders": shortage_orders
+        },
+        "gst": {
+            "taxable": float(total_taxable),
+            "cgst": float(total_cgst),
+            "sgst": float(total_sgst),
+            "igst": float(total_igst),
+            "total_tax": float(total_cgst + total_sgst + total_igst)
+        },
+        "customers": cust_summary
+    }
