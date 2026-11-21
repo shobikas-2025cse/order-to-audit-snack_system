@@ -1,3 +1,11 @@
+from dotenv import load_dotenv
+load_dotenv()
+from security import (
+    create_access_token,
+    verify_password,
+    hash_password
+)
+from security import require_roles, create_access_token, get_current_user
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -73,12 +81,47 @@ def get_weighted_avg_cost(db: Session, item_id: int) -> Decimal:
     return (total_val / total_qty) if total_qty > 0 else Decimal("0")
 
 # --- Endpoints ---
+
 @app.post("/api/login")
 def login(req: LoginReq, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == req.username, User.password == req.password).first()
+    user = db.query(User).filter(
+        User.username == req.username
+    ).first()
+
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    return {"id": user.id, "username": user.username, "role": user.role}
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid credentials"
+        )
+
+    # Support old plaintext passwords during migration
+    if user.password.startswith("pbkdf2_sha256$"):
+        if not verify_password(req.password, user.password):
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid credentials"
+            )
+    else:
+        if user.password != req.password:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid credentials"
+            )
+
+        # Upgrade old password to hashed password
+        user.password = hash_password(req.password)
+        db.commit()
+
+    token = create_access_token(user)
+
+    return {
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "access_token": token,
+        "token_type": "bearer"
+    }
+
 
 @app.get("/api/master-data")
 def get_master_data(db: Session = Depends(get_db)):
@@ -273,13 +316,41 @@ def get_stock_ledger(db: Session = Depends(get_db)):
         for e in entries
     ]
 @app.post("/api/reset-benchmark")
-def reset_benchmark(db: Session = Depends(get_db)):
-    from seed import seed_data
-    db.close()
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    seed_data()
-    return {"message": "Database reset to Section 5 initial state!"}
+def reset_benchmark(
+    current_user: User = Depends(require_roles("admin")),
+    db: Session = Depends(get_db)
+):
+    if os.getenv("ENABLE_BENCHMARK_RESET", "false").lower() != "true":
+        raise HTTPException(
+            status_code=403,
+            detail="Benchmark reset is disabled in this environment."
+        )
+
+    try:
+        # Reset only the benchmark's transactional records.
+        # Do not drop the entire database or recreate the schema.
+        db.query(Payment).delete(synchronize_session=False)
+        db.query(OrderItem).delete(synchronize_session=False)
+        db.query(Order).delete(synchronize_session=False)
+        db.query(ProductionConsumption).delete(synchronize_session=False)
+        db.query(ProductionRun).delete(synchronize_session=False)
+
+        db.query(StockLedger).filter(
+            StockLedger.source_type != "opening"
+        ).delete(synchronize_session=False)
+
+        db.commit()
+
+        return {
+            "message": "Benchmark transactions reset successfully."
+        }
+
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Benchmark reset failed."
+        )
 
 @app.get("/api/audit-summary")
 def get_audit_summary(db: Session = Depends(get_db)):
