@@ -4,11 +4,13 @@ import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import { Factory, ShoppingCart, FileText, BarChart3, AlertTriangle, CheckCircle, Download, LogOut, X } from "lucide-react";
 
-const API = (import.meta.env.VITE_API_URL
-  || (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
-    ? "http://127.0.0.1:8000/api"
-    : "/api")).replace(/\/$/, "");
-
+// const API = (import.meta.env.VITE_API_URL
+//   || (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+//     ? "http://127.0.0.1:8000/api"
+//     : "/api")).replace(/\/$/, "");
+const API = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+  ? "http://127.0.0.1:8000/api"
+  : "https://snack-erp-backend.onrender.com/api";
 
 
 export default function App() {
