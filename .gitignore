@@ -5,3 +5,9 @@ __pycache__/
 node_modules/
 dist/
 *.db
+.env
+.env.local
+.env.*
+!.env.example
+firebase-service-account.json
+**/firebase-service-account.json

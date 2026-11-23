@@ -22,3 +22,27 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+.env
+backend/.env
+__pycache__/
+*.pyc
+venv/
+*.db
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Firebase credentials
+firebase-service-account.json
+**/firebase-service-account.json
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Frontend
+node_modules/
+dist/

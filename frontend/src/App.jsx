@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { auth } from "./firebase";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
@@ -9,11 +11,12 @@ import { Factory, ShoppingCart, FileText, BarChart3, AlertTriangle, CheckCircle,
 //     ? "http://127.0.0.1:8000/api"
 //     : "/api")).replace(/\/$/, "");
 const API = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
-  ? "http://127.0.0.1:8000/api"
+  ? "http://127.0.0.1:8001/api"
   : "https://snack-erp-backend.onrender.com/api";
 
 
 export default function App() {
+  const [firebaseToken, setFirebaseToken] = useState(null);
   const [user, setUser] = useState(null);
   const [tab, setTab] = useState("dashboard");
   const [username, setUsername] = useState("");
@@ -45,26 +48,59 @@ export default function App() {
   const [orderQty, setOrderQty] = useState(150);
   const [payAmount, setPayAmount] = useState(4000);
 
-  const loadAll = async role => {
-    const roleEndpoints = {
-      salesman: ["master-data"],
-      production: ["master-data", "ledger"],
-      admin: ["orders"],
-      auditor: ["master-data", "orders", "ledger", "audit-summary"],
-      owner: ["master-data", "orders", "ledger", "audit-summary"]
-    };
-    const endpoints = roleEndpoints[role];
-    if (!endpoints) throw new Error("This account does not have an assigned workspace.");
-    const responses = await Promise.all(endpoints.map(endpoint => fetch(`${API}/${endpoint}`)));
-    if (responses.some(response => !response.ok)) throw new Error("Unable to load workspace data.");
-    const payloads = await Promise.all(responses.map(response => response.json()));
-    const data = Object.fromEntries(endpoints.map((endpoint, index) => [endpoint, payloads[index]]));
-    if (data["master-data"]) setMaster(data["master-data"]);
-    else setMaster({ items: [], customers: [], boms: [] });
-    setOrders(data.orders || []);
-    setLedger(data.ledger || []);
-    setAudit(data["audit-summary"] || null);
+  
+const loadAll = async (role, token) => {
+  const roleEndpoints = {
+    salesman: ["master-data"],
+    production: ["master-data", "ledger"],
+    admin: ["orders"],
+    auditor: ["master-data", "orders", "ledger", "audit-summary"],
+    owner: ["master-data", "orders", "ledger", "audit-summary"]
   };
+
+  const endpoints = roleEndpoints[role];
+
+  if (!endpoints) {
+    throw new Error("This account does not have an assigned workspace.");
+  }
+
+  if (!token) {
+    throw new Error("Authentication token is missing. Please sign in again.");
+  }
+
+  const responses = await Promise.all(
+    endpoints.map(endpoint =>
+      fetch(`${API}/${endpoint}`, {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      })
+    )
+  );
+
+  if (responses.some(response => !response.ok)) {
+    throw new Error("Unable to load workspace data. Please check your access permissions.");
+  }
+
+  const payloads = await Promise.all(
+    responses.map(response => response.json())
+  );
+
+  const data = Object.fromEntries(
+    endpoints.map((endpoint, index) => [endpoint, payloads[index]])
+  );
+
+  if (data["master-data"]) {
+    setMaster(data["master-data"]);
+  } else {
+    setMaster({ items: [], customers: [], boms: [] });
+  }
+
+  setOrders(data.orders || []);
+  setLedger(data.ledger || []);
+  setAudit(data["audit-summary"] || null);
+};
+
 
   const defaultTabForRole = {
     salesman: "salesman",
@@ -74,57 +110,98 @@ export default function App() {
     owner: "dashboard"
   };
 
-  const handleLogin = async event => {
-    event.preventDefault();
-    setLoginLoading(true);
-    try {
-      const res = await fetch(`${API}/login`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: username.trim(), password })
-      });
-      if (!res.ok) {
-        const errorData = await res.json();
-        showToast(res.status === 401 ? "Invalid username or password." : errorData.detail || "Unable to sign in.", "error");
-        return;
-      }
-      const loggedInUser = await res.json();
-      const defaultTab = defaultTabForRole[loggedInUser.role];
-      if (!defaultTab) {
-        showToast("This account does not have an assigned workspace.", "error");
-        return;
-      }
-      await loadAll(loggedInUser.role);
-      setUser(loggedInUser);
-      setTab(defaultTab);
-      setPassword("");
-      showToast(`Signed in as ${loggedInUser.username}.`);
-    } catch {
-      showToast("Unable to connect to the server or load your workspace.", "error");
-    } finally {
-      setLoginLoading(false);
-    }
-  };
+   
+const handleLogin = async event => {
+  event.preventDefault();
+  setLoginLoading(true);
 
-  const quickDemoFill = demoUsername => {
-    setUsername(demoUsername);
-    setPassword("123");
-  };
+  try {
+    // Step 1: Authenticate using Firebase
+    const credential = await signInWithEmailAndPassword(
+      auth,
+      username.trim(),
+      password
+    );
 
-  const handleResetBenchmark = async () => {
-    if (!window.confirm("Reset all demo data to the benchmark state? This will remove current orders, payments, and stock movements.")) return;
-    setResetting(true);
-    try {
-      const res = await fetch(`${API}/reset-benchmark`, { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Benchmark reset failed.");
-      await loadAll(user.role);
-      showToast(data.message || "Demo data reset successfully.", "success");
-    } catch (error) {
-      showToast(error.message || "Unable to reset demo data.", "error");
-    } finally {
-      setResetting(false);
+    // Step 2: Get Firebase ID token
+    const token = await credential.user.getIdToken();
+
+    // Step 3: Ask backend to identify the ERP user and role
+    const response = await fetch(`${API}/auth/me`, {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || "Unable to identify ERP account.");
     }
-  };
+
+    const loggedInUser = await response.json();
+
+    // Step 4: Load the correct dashboard
+    const defaultTab = defaultTabForRole[loggedInUser.role];
+
+    if (!defaultTab) {
+      throw new Error("This account does not have an assigned workspace.");
+    }
+
+    await loadAll(loggedInUser.role, token);
+
+    setFirebaseToken(token);
+    setUser(loggedInUser);
+    setTab(defaultTab);
+    setPassword("");
+
+    showToast(`Signed in as ${loggedInUser.username}.`);
+
+  } catch (error) {
+    console.error("Firebase login error:", error);
+
+    showToast(
+      error.code === "auth/invalid-credential"
+        ? "Invalid email or password."
+        : error.message || "Unable to sign in.",
+      "error"
+    );
+
+  } finally {
+    setLoginLoading(false);
+  }
+};
+
+
+  const quickDemoFill = demoEmail => {
+  setUsername(demoEmail);
+  setPassword("");
+};
+
+ 
+const handleResetBenchmark = async () => {
+  if (!window.confirm("Reset all demo data to the benchmark state? This will remove current orders, payments, and stock movements.")) return;
+
+  setResetting(true);
+  try {
+    const res = await fetch(`${API}/reset-benchmark`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${firebaseToken}`
+      }
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Benchmark reset failed.");
+
+    await loadAll(user.role, firebaseToken);
+    showToast(data.message || "Demo data reset successfully.", "success");
+  } catch (error) {
+    showToast(error.message || "Unable to reset demo data.", "error");
+  } finally {
+    setResetting(false);
+  }
+};
+
 
   const finishedItem = master.items.find(item => item.category === "finished");
   const selectedCustomer = master.customers.find(customer => customer.id === Number(orderCust));
@@ -165,60 +242,140 @@ export default function App() {
     { label: "Overhead", value: overheadCost, color: "bg-amber-500" }
   ];
 
-  const handlePurchase = async (e) => {
-    e.preventDefault();
-    await fetch(`${API}/purchases`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ item_id: Number(purItem), qty: Number(purQty), unit_cost: Number(purCost) })
-    });
-    showToast("Purchase recorded & Stock updated!", "success");
-    loadAll(user.role);
-  };
+ 
+const handlePurchase = async (e) => {
+  e.preventDefault();
 
-  const handleProduction = async (e) => {
-    e.preventDefault();
-    const murukku = master.items.find(i => i.category === "finished");
-    const res = await fetch(`${API}/production`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ finished_item_id: murukku.id, ...prodForm })
-    });
-    setProdResult(await res.json());
-    loadAll(user.role);
-  };
+  const res = await fetch(`${API}/purchases`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${firebaseToken}`
+    },
+    body: JSON.stringify({
+      item_id: Number(purItem),
+      qty: Number(purQty),
+      unit_cost: Number(purCost)
+    })
+  });
 
-  const handleCreateOrder = async (e) => {
-    e.preventDefault();
-    const murukku = master.items.find(i => i.category === "finished");
-    await fetch(`${API}/orders`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        customer_id: Number(orderCust),
-        salesman_id: user.id,
-        items: [{ item_id: murukku.id, qty: Number(orderQty) }]
-      })
-    });
-    showToast("Order submitted to factory!", "success");
-    loadAll(user.role);
-  };
-
-  const handleDispatch = async (orderId) => {
-    const res = await fetch(`${API}/orders/${orderId}/approve-dispatch`, { method: "POST" });
+  if (!res.ok) {
     const data = await res.json();
-    if (!res.ok) showToast(`Blocked: ${data.detail}`, "error");
-    else {
-      showToast(`Dispatched! Invoice: ${data.invoice_number}`, "success");
-      loadAll(user.role);
-    }
-  };
+    showToast(data.detail || "Purchase failed.", "error");
+    return;
+  }
 
-  const handlePayment = async (orderId) => {
-    await fetch(`${API}/payments`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ order_id: orderId, amount: Number(payAmount) })
-    });
-    showToast("Payment recorded!", "success");
-    loadAll(user.role);
-  };
+  showToast("Purchase recorded & Stock updated!", "success");
+  await loadAll(user.role, firebaseToken);
+};
+
+
+  
+const handleProduction = async (e) => {
+  e.preventDefault();
+
+  const murukku = master.items.find(i => i.category === "finished");
+
+  const res = await fetch(`${API}/production`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${firebaseToken}`
+    },
+    body: JSON.stringify({
+      finished_item_id: murukku.id,
+      ...prodForm
+    })
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    showToast(data.detail || "Production failed.", "error");
+    return;
+  }
+
+  setProdResult(data);
+  await loadAll(user.role, firebaseToken);
+};
+
+
+  
+const handleCreateOrder = async (e) => {
+  e.preventDefault();
+
+  const murukku = master.items.find(i => i.category === "finished");
+
+  const res = await fetch(`${API}/orders`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${firebaseToken}`
+    },
+    body: JSON.stringify({
+      customer_id: Number(orderCust),
+      salesman_id: user.id,
+      items: [{ item_id: murukku.id, qty: Number(orderQty) }]
+    })
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    showToast(data.detail || "Order submission failed.", "error");
+    return;
+  }
+
+  showToast("Order submitted to factory!", "success");
+  await loadAll(user.role, firebaseToken);
+};
+
+
+const handleDispatch = async (orderId) => {
+  const res = await fetch(`${API}/orders/${orderId}/approve-dispatch`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${firebaseToken}`
+    }
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    showToast(`Blocked: ${data.detail}`, "error");
+    return;
+  }
+
+  showToast(`Dispatched! Invoice: ${data.invoice_number}`, "success");
+  await loadAll(user.role, firebaseToken);
+};
+
+
+ 
+const handlePayment = async (orderId) => {
+  const res = await fetch(`${API}/payments`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${firebaseToken}`
+    },
+    body: JSON.stringify({
+      order_id: orderId,
+      amount: Number(payAmount)
+    })
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    showToast(data.detail || "Payment recording failed.", "error");
+    return;
+  }
+
+  showToast("Payment recorded!", "success");
+  await loadAll(user.role, firebaseToken);
+};
+
 
   const downloadInvoicePDF = (o) => {
     const doc = new jsPDF();
@@ -273,12 +430,13 @@ export default function App() {
 
   if (!user) {
     const demoAccounts = [
-      ["production", "Production"],
-      ["salesman_a", "Sales A"],
-      ["salesman_b", "Sales B"],
-      ["admin", "Admin"],
-      ["auditor", "Auditor"]
-    ];
+  ["snackerp.demo+production@gmail.com", "Production"],
+  ["snackerp.demo+sales1@gmail.com", "Sales A"],
+  ["snackerp.demo+sales2@gmail.com", "Sales B"],
+  ["snackerp.demo+admin@gmail.com", "Admin"],
+  ["snackerp.demo+auditor@gmail.com", "Auditor"],
+  ["snackerp.demo+owner@gmail.com", "Owner"]
+];
 
     return (
       <>
@@ -303,17 +461,38 @@ export default function App() {
                 <p className="mt-2 text-sm text-stone-500">Use your assigned account to open your workspace.</p>
               </div>
               <form onSubmit={handleLogin} className="space-y-4">
-                <label className="block text-sm font-semibold text-stone-700">Username
-                  <span className="relative mt-1.5 block"><UserRound size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400"/><input required autoComplete="username" value={username} onChange={event => setUsername(event.target.value)} className="w-full rounded-xl border border-stone-200 bg-white py-3 pl-10 pr-3 text-sm font-normal text-stone-900 outline-none transition focus:border-amber-600 focus:ring-4 focus:ring-amber-100" placeholder="Enter your username"/></span>
-                </label>
-                <label className="block text-sm font-semibold text-stone-700">Password
-                  <span className="relative mt-1.5 block"><LockKeyhole size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400"/><input required type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} className="w-full rounded-xl border border-stone-200 bg-white py-3 pl-10 pr-3 text-sm font-normal text-stone-900 outline-none transition focus:border-amber-600 focus:ring-4 focus:ring-amber-100" placeholder="Enter your password"/></span>
-                </label>
+                <label className="block text-sm font-semibold text-stone-700">Email address
+  <span className="relative mt-1.5 block">
+    <UserRound size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400"/>
+    <input
+      required
+      type="email"
+      autoComplete="email"
+      value={username}
+      onChange={event => setUsername(event.target.value)}
+      className="w-full rounded-xl border border-stone-200 bg-white py-3 pl-10 pr-3 text-sm font-normal text-stone-900 outline-none transition focus:border-amber-600 focus:ring-4 focus:ring-amber-100"
+      placeholder="Enter your registered email"
+    />
+  </span>
+</label>
+
+<label className="block text-sm font-semibold text-stone-700 mt-4">
+  Password
+  <input
+    required
+    type="password"
+    autoComplete="current-password"
+    value={password}
+    onChange={(event) => setPassword(event.target.value)}
+    placeholder="Enter your account password"
+    className="mt-1.5 w-full rounded-xl border border-stone-200 bg-white py-3 px-3 text-sm text-stone-900 outline-none focus:border-amber-600 focus:ring-4 focus:ring-amber-100"
+  />
+</label>
+
                 <button type="submit" disabled={loginLoading} className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#D97706] px-4 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-amber-700 focus:outline-none focus:ring-4 focus:ring-amber-200 disabled:cursor-wait disabled:opacity-60">{loginLoading ? "Signing in…" : "Sign in"}<ArrowUpRight size={16}/></button>
               </form>
               <div className="mt-7 border-t border-stone-100 pt-5">
-                <div className="mb-3 flex items-center justify-between gap-2"><p className="text-xs font-semibold uppercase tracking-wider text-stone-500">Quick Demo Fill</p><p className="text-[11px] text-stone-400">password: 123</p></div>
-                <div className="flex flex-wrap gap-2">{demoAccounts.map(([demoUsername, label]) => <button key={demoUsername} type="button" onClick={() => quickDemoFill(demoUsername)} className="rounded-full border border-stone-200 bg-stone-50 px-3 py-1.5 text-xs font-semibold text-stone-600 transition hover:border-amber-300 hover:bg-amber-50 hover:text-amber-800">{label}</button>)}</div>
+<p className="text-[11px] text-stone-400">Enter your account password</p>                <div className="flex flex-wrap gap-2">{demoAccounts.map(([demoUsername, label]) => <button key={demoUsername} type="button" onClick={() => quickDemoFill(demoUsername)} className="rounded-full border border-stone-200 bg-stone-50 px-3 py-1.5 text-xs font-semibold text-stone-600 transition hover:border-amber-300 hover:bg-amber-50 hover:text-amber-800">{label}</button>)}</div>
                 <p className="mt-3 text-xs text-stone-400">Demo badges fill the sign-in form; submit to continue.</p>
               </div>
             </section>
@@ -366,7 +545,28 @@ export default function App() {
         </nav>
         <div className="mt-auto space-y-2 border-t border-stone-800 p-4">
           {canResetBenchmark && <button type="button" onClick={handleResetBenchmark} disabled={resetting} className="flex w-full items-center gap-2 rounded-xl border border-stone-700 px-3 py-2.5 text-left text-xs font-semibold text-stone-300 transition hover:border-amber-600/60 hover:bg-stone-800 hover:text-amber-300 disabled:opacity-60"><RotateCcw size={15} className={resetting ? "animate-spin" : ""}/>{resetting ? "Resetting benchmark…" : "Reset benchmark data"}</button>}
-          <button type="button" onClick={() => { setUser(null); setPassword(""); setTab("dashboard"); }} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-stone-400 transition hover:bg-stone-800 hover:text-white"><LogOut size={15}/> Sign out / switch role</button>
+
+<button
+  type="button"
+  onClick={async () => {
+    try {
+      await signOut(auth);
+
+      setFirebaseToken(null);
+      setUser(null);
+      setPassword("");
+      setUsername("");
+      setTab("dashboard");
+
+      showToast("Signed out successfully.", "success");
+    } catch (error) {
+      showToast("Unable to sign out. Please try again.", "error");
+    }
+  }}
+  className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-stone-400 transition hover:bg-stone-800 hover:text-white"
+>
+  <LogOut size={15} /> Sign out / switch role
+</button>
           <p className="px-1 pt-1 text-[10px] text-stone-600">SUVAILEDGER ERP · DEMO</p>
         </div>
       </aside>
@@ -466,7 +666,7 @@ export default function App() {
                 <div><p className="text-xs font-semibold uppercase tracking-widest text-amber-700">Procurement</p><h2 className="mt-1 text-lg font-bold text-stone-900">Record a purchase</h2></div>
                 <label className="block text-sm font-medium text-stone-700">Raw material<select value={purItem} onChange={e => setPurItem(e.target.value)} className="mt-1.5 w-full rounded-lg border border-stone-200/80 bg-white px-3 py-2.5 text-sm outline-none focus:border-amber-600 focus:ring-2 focus:ring-amber-100">{master.items.filter(item => item.category !== "finished").map(item => <option key={item.id} value={item.id}>{item.name} ({item.unit})</option>)}</select></label>
                 <div className="grid grid-cols-2 gap-3"><label className="text-sm font-medium text-stone-700">Quantity<input type="number" step="0.01" value={purQty} onChange={e => setPurQty(e.target.value)} className="mt-1.5 w-full rounded-lg border border-stone-200/80 px-3 py-2.5 outline-none focus:border-amber-600 focus:ring-2 focus:ring-amber-100"/></label><label className="text-sm font-medium text-stone-700">Unit cost<input type="number" step="0.01" value={purCost} onChange={e => setPurCost(e.target.value)} className="mt-1.5 w-full rounded-lg border border-stone-200/80 px-3 py-2.5 outline-none focus:border-amber-600 focus:ring-2 focus:ring-amber-100"/></label></div>
-                <button className="w-full rounded-lg bg-[#1C1917] py-2.5 text-sm font-semibold text-white transition hover:bg-stone-700">Add purchase to stock</button>
+                <button className="w-full rounded-lg bg-[#1C1917] py-2.5 text-sm font-semibold text-white transition hover:bg-slate-700">Add purchase to stock</button>
               </form>
 
               <form onSubmit={handleProduction} className="space-y-5 rounded-2xl border border-stone-200/80 bg-white p-5 shadow-sm">
@@ -509,7 +709,7 @@ export default function App() {
 
         {tab === "salesman" && user.role === "salesman" && (
           <section className="mx-auto max-w-4xl space-y-6">
-            <div><p className="text-sm font-semibold text-amber-700">SALES DESK</p><h1 className="mt-1 text-2xl font-bold tracking-tight text-stone-900">Create a field order</h1><p className="mt-1 text-sm text-stone-500">Check inventory and preview the tax-inclusive estimate before submitting.</p></div>
+            <div><p className="text-sm font-semibold text-blue-600">SALES DESK</p><h1 className="mt-1 text-2xl font-bold tracking-tight text-stone-900">Create a field order</h1><p className="mt-1 text-sm text-stone-500">Check inventory and preview the tax-inclusive estimate before submitting.</p></div>
             <div className="grid gap-6 md:grid-cols-[1.1fr_0.9fr]">
               <form onSubmit={handleCreateOrder} className="space-y-5 rounded-2xl border border-stone-200/80 bg-white p-6 shadow-sm">
                 <div className="flex items-center gap-3"><div className="rounded-xl bg-amber-50 p-2.5 text-amber-800"><ShoppingCart size={21}/></div><div><h2 className="font-bold text-stone-900">Order details</h2><p className="text-xs text-stone-500">Murukku 200 g · {formatMoney(finishedItem?.selling_price ?? 50)} per packet</p></div></div>
@@ -543,7 +743,7 @@ export default function App() {
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     {order.status === "submitted" && <button type="button" onClick={() => handleDispatch(order.id)} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-emerald-700">Approve & dispatch</button>}
-                    {order.status === "dispatched" && <><button type="button" onClick={() => downloadInvoicePDF(order)} className="inline-flex items-center gap-2 rounded-lg bg-[#1C1917] px-3 py-2.5 text-xs font-semibold text-white hover:bg-stone-700"><Download size={14}/> PDF invoice</button>{order.outstanding > 0 && <div className="flex items-center gap-1.5"><input aria-label="Payment amount" type="number" value={payAmount} onChange={e => setPayAmount(e.target.value)} className="w-28 rounded-lg border border-stone-200/80 px-2.5 py-2 text-sm"/><button type="button" onClick={() => handlePayment(order.id)} className="rounded-lg bg-amber-600 px-3 py-2.5 text-xs font-semibold text-white hover:bg-amber-700">Record payment</button></div>}</>}
+                    {order.status === "dispatched" && <><button type="button" onClick={() => downloadInvoicePDF(order)} className="inline-flex items-center gap-2 rounded-lg bg-[#1C1917] px-3 py-2.5 text-xs font-semibold text-white hover:bg-slate-700"><Download size={14}/> PDF invoice</button>{order.outstanding > 0 && <div className="flex items-center gap-1.5"><input aria-label="Payment amount" type="number" value={payAmount} onChange={e => setPayAmount(e.target.value)} className="w-28 rounded-lg border border-stone-200/80 px-2.5 py-2 text-sm"/><button type="button" onClick={() => handlePayment(order.id)} className="rounded-lg bg-amber-600 px-3 py-2.5 text-xs font-semibold text-white hover:bg-amber-700">Record payment</button></div>}</>}
                   </div>
                 </div>
               </article>

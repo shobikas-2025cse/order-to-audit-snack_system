@@ -4,12 +4,15 @@ from datetime import datetime, timezone
 
 Base = declarative_base()
 
+
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
-    password = Column(String)  # Simple auth for prototype
-    role = Column(String)      # salesman, admin, production, auditor, owner
+    password = Column(String)
+    role = Column(String)
+    firebase_uid = Column(String, unique=True, nullable=True, index=True)
+
 
 class Customer(Base):
     __tablename__ = "customers"
