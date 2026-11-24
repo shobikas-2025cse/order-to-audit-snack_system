@@ -548,21 +548,19 @@ const handlePayment = async (orderId) => {
 
 <button
   type="button"
-  onClick={async () => {
-    try {
-      await signOut(auth);
-
-      setFirebaseToken(null);
-      setUser(null);
-      setPassword("");
-      setUsername("");
-      setTab("dashboard");
-
-      showToast("Signed out successfully.", "success");
-    } catch (error) {
-      showToast("Unable to sign out. Please try again.", "error");
-    }
-  }}
+ onClick={async () => {
+  try {
+    await signOut(auth);
+    setFirebaseToken(null);
+    setUser(null);
+    setPassword("");
+    setUsername("");
+    setTab("dashboard");
+    showToast("Signed out successfully.", "success");
+  } catch (error) {
+    showToast("Unable to sign out. Please try again.", "error");
+  }
+}}
   className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-stone-400 transition hover:bg-stone-800 hover:text-white"
 >
   <LogOut size={15} /> Sign out / switch role

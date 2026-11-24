@@ -18,13 +18,25 @@ firebase_uid_map = {
 }
 
 # Validate before changing the database
-if any(uid.startswith("PASTE_") for uid in firebase_uid_map.values()):
-    raise ValueError("Replace all UID placeholders first.")
+if any(
+    not uid or "..." in uid or "…" in uid
+    or uid.startswith("PASTE_")
+    for uid in firebase_uid_map.values()
+):
+    raise ValueError("Enter all six complete Firebase UIDs.")
 
 if len(set(firebase_uid_map.values())) != len(firebase_uid_map):
     raise ValueError("Duplicate Firebase UIDs detected.")
 
 db = SessionLocal()
+bind = db.get_bind()
+
+print("Database type:", bind.dialect.name)
+
+if bind.dialect.name != "postgresql":
+    raise RuntimeError(
+        "Wrong database! Expected production PostgreSQL."
+    )
 
 try:
     for username, firebase_uid in firebase_uid_map.items():
